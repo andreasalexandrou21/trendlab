@@ -106,3 +106,27 @@ def test_first_trade_cost_is_exact(flat_prices):
 
     assert result.trade_costs.iloc[0] == 0.0
     assert result.trade_costs.iloc[1] == pytest.approx(1_000.0 * 90.0 / 1e4)
+
+
+def test_idle_cash_earns_nothing_by_default():
+    """Correct for a small account: IBKR pays no interest below USD 10,000."""
+    model = CostModel()
+    assert model.financing_cost(gross_notional=200.0, equity=1_000.0, days=30) == 0.0
+
+
+def test_idle_cash_can_be_credited_for_a_larger_account():
+    """A book running 0.25x gross leaves 75% idle. Ignoring that penalises the strategy.
+
+    EUR 1,000 equity, EUR 250 deployed, EUR 750 idle at 2% for a year = EUR 15 credited,
+    which shows up as a negative financing cost.
+    """
+    model = CostModel(cash_rate=0.02)
+    charge = model.financing_cost(gross_notional=250.0, equity=1_000.0, days=DAYS_PER_YEAR)
+    assert charge == pytest.approx(-15.0)
+
+
+def test_leverage_still_costs_when_cash_is_credited():
+    """A levered book has no idle cash, so the credit must not offset the borrow charge."""
+    model = CostModel(cash_rate=0.02, benchmark_rate=0.02, financing_spread=0.03)
+    charge = model.financing_cost(gross_notional=3_000.0, equity=1_000.0, days=DAYS_PER_YEAR)
+    assert charge == pytest.approx(100.0)

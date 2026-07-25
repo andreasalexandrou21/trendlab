@@ -3,12 +3,14 @@
 A systematic trend-following research system for crypto majors. Daily frequency, honest costs,
 and a backtester built before any strategy, so it has no incentive to flatter one.
 
-**Status: Batch 3 of 4, and the project stops here.** The strategy was built, measured, and
-validated properly. It does not work. Batch 4 was live paper execution, and it is cancelled,
-because the correct response to this evidence is not to trade it.
+**Status: Batch 4. The trend signal is statistically real. It is still not worth trading.**
 
-That is the result. It is reported in the same place and the same detail a good result would
-have been, which is the point of building the measuring instrument before the strategy.
+Batch 3 blamed the crypto failure on effective breadth of 1.7. Batch 4 tested that on a
+15-instrument cross-asset universe, breadth doubled to 3.3, and the gross deflated Sharpe went
+from 0.926 (fail) to **0.977 (pass)**. The hypothesis was right.
+
+Net of costs it is Sharpe 0.33, against **0.85 for holding two ETFs and never touching them.**
+See [the cross-asset result](#result-2-cross-asset-the-signal-is-real-and-still-loses-to-6040).
 
 ## Why the engine comes first
 
@@ -117,7 +119,82 @@ So the bias is worth about **0.6% a year** here. Smaller than expected, real, an
 predicted direction. Worth knowing that it is a modest effect on this dataset rather than
 assuming it either way.
 
-## Verdict: the signal is real gross, gone net, and unfindable in real time
+## Result 2, cross-asset: the signal is real, and still loses to 60/40
+
+`python run_batch4.py`. 15 ETFs spanning US/international/EM equity, REITs, treasuries,
+credit, gold, silver, commodities, oil and the dollar. 2007-01 to 2026-07, so it contains the
+GFC, COVID and the 2022 rate shock. IBKR-style costs (3bp commission + 2bp slippage), doubled.
+
+**Breadth roughly doubled, exactly as predicted:**
+
+```
+effective breadth  3.3 of 15 nominal   (crypto was 1.7 of 10)
+mean IDM           1.89                (crypto was 1.21)
+```
+
+**And that flipped the gross result:**
+
+| | Crypto (Batch 3) | Cross-asset (Batch 4) |
+|---|---|---|
+| Best gross Sharpe | 0.73 | 0.64 |
+| **Gross DSR** | 0.926 FAIL | **0.977 PASS** |
+| Best net Sharpe | 0.07 | 0.33 |
+| Net DSR | 0.430 FAIL | 0.382 FAIL |
+| Walk-forward OOS | -0.42 | -0.12 |
+
+The gross deflated Sharpe passing is the first statistically defensible finding in this
+repo. A slow cross-asset trend signal exists, it survives correction for having tested ten
+rule sets, and it is consistent with the published literature.
+
+### Turnover was an implementation bug, and fixing it was not enough
+
+A 128-day signal was turning over 20.5x a year, because the book chased exact volatility
+targets every single bar. Adding a no-trade buffer (`run(..., trade_buffer=...)`) fixes it:
+
+| Buffer | Turnover/yr | Cost/yr | Gross SR | Net SR |
+|---|---|---|---|---|
+| 0.00 | 20.5 | 5.4% | 0.60 | 0.12 |
+| 0.25 | 11.6 | 4.5% | 0.62 | 0.21 |
+| 1.00 | 5.7 | 3.7% | 0.66 | 0.24 |
+| **2.00** | **3.1** | **2.2%** | **0.67** | **0.33** |
+
+Cost drag fell by 60% and net Sharpe nearly tripled. It still was not enough.
+
+### The row that ends it
+
+| Strategy | CAGR | Vol | Sharpe | MaxDD | Turnover | Cost/yr |
+|---|---|---|---|---|---|---|
+| trend, best config | 2.1% | 6.8% | 0.33 | -21.3% | 3.1x | 2.2% |
+| trend, at scale (2% on idle cash) | 2.4% | 6.8% | 0.39 | -21.3% | 3.0x | 1.9% |
+| hold SPY | 10.8% | 19.6% | 0.62 | -55.2% | 0.1x | 0.0% |
+| **60/40 SPY + IEF** | **8.2%** | **9.8%** | **0.85** | **-22.1%** | **0.1x** | **0.0%** |
+
+```
+SPA, trend vs 60/40:  consistent p = 0.491   -> does not beat it
+correlation of the two return streams: 0.41  -> not even a useful diversifier
+```
+
+Buying two ETFs and never touching them again produces a higher Sharpe, four times the
+return, the same drawdown, zero turnover, zero cost, and zero code.
+
+Two honest caveats, both of which make the strategy look better than it is, not worse:
+- At buffer 2.0 realised volatility is 6.8% against a 15% target, so the book runs at half
+  its intended risk. Scaling to 15% would roughly lift the return to ~5% and the drawdown to
+  ~-45%. Still worse than 60/40 on both axes.
+- Idle cash earns nothing in the base case, which is correct for a small account (IBKR pays
+  no interest below USD 10,000) but understates the strategy at scale. The 2% row models it.
+
+### Conclusion
+
+Breadth was a genuine constraint and fixing it produced a genuine, statistically significant
+gross signal. The signal is simply too small: ~6.7% a year gross at 11% volatility, against a
+2-5% cost floor that no amount of buffering removes. What is left after costs does not beat a
+passive two-fund portfolio and cannot be distinguished from it statistically.
+
+**The instrument works. The strategy does not. Those are different sentences, and only the
+first one was ever worth building.**
+
+## Verdict on crypto: the signal is real gross, gone net, and unfindable in real time
 
 `python run_batch3.py`. Ten EWMAC rule sets, fixed before looking at any result and written
 out explicitly so the trial count cannot quietly grow. Every evaluation is appended to
@@ -260,8 +337,9 @@ Stated here rather than discovered later.
   universe, effective-breadth measurement. Result: negative after costs.
 - **Batch 3 (done):** walk-forward, deflated Sharpe, trial logging, Hansen SPA, effective
   breadth. Verdict: no tradeable edge. See above.
-- **Batch 4: cancelled.** Nothing survived Batch 3, so there is nothing to execute. The
-  instrument is reusable against any market with real breadth; the strategy is not.
+- **Batch 4 (done):** cross-asset universe, calendar-day financing, inferred bars-per-year,
+  no-trade buffer, cash-interest credit. Gross signal confirmed real (DSR 0.977). Net result
+  still loses to 60/40. Live execution not built, because there is nothing worth executing.
 
 Negative results get published here alongside positive ones. A strategy that fails to beat
 buy-and-hold net of doubled costs is a finding, not a gap.

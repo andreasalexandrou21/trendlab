@@ -311,3 +311,66 @@ def point_in_time_universe(
     # rank 1 = most liquid; ties broken deterministically by column order
     ranks = liquidity.rank(axis=1, ascending=False, method="first")
     return (ranks <= n).fillna(False)
+
+
+# Cross-asset universe. The point is genuinely different return drivers, which is exactly
+# what the crypto universe did not have: effective breadth there was 1.7 against a nominal
+# 10, because every coin was one factor wearing a different ticker.
+#
+# ETF proxies rather than futures, because futures need EUR 30-50k of margin to hold a
+# diversified book and the whole question here is whether breadth fixes the result at all.
+# If it does, the same signals port to micro futures once capital exists.
+CROSS_ASSET = {
+    "SPY": "US large cap",
+    "QQQ": "US tech",
+    "IWM": "US small cap",
+    "EFA": "developed ex-US",
+    "EEM": "emerging markets",
+    "VNQ": "US REITs",
+    "TLT": "US 20y+ treasuries",
+    "IEF": "US 7-10y treasuries",
+    "LQD": "investment grade credit",
+    "HYG": "high yield credit",
+    "GLD": "gold",
+    "SLV": "silver",
+    "DBC": "broad commodities",
+    "USO": "crude oil",
+    "UUP": "US dollar index",
+}
+
+
+def load_cross_asset(
+    tickers: list[str] | None = None,
+    start: str = "2007-01-01",
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """Daily adjusted closes for the cross-asset ETF universe, cached to parquet.
+
+    Uses yfinance, which scrapes an unofficial Yahoo endpoint and breaks periodically. Fine
+    for research, never for production. `auto_adjust=True` matters: unadjusted prices make
+    every dividend look like a one-day crash and manufacture fake trend signals.
+    """
+    import os
+    import tempfile
+
+    tickers = tickers or list(CROSS_ASSET)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / f"cross_asset_{start}.parquet"
+
+    if path.exists() and not refresh:
+        frame = pd.read_parquet(path)
+    else:
+        os.environ.setdefault("YF_CACHE_DIR", tempfile.mkdtemp())
+        import yfinance as yf
+
+        raw = yf.download(tickers, start=start, progress=False, auto_adjust=True, threads=False)
+        frame = raw["Close"].dropna(how="all")
+        if frame.index.tz is None:
+            frame.index = frame.index.tz_localize("UTC")
+        frame.to_parquet(path)
+
+    frame = frame.sort_index()
+    log.info(
+        "cross-asset: %s bars, %s to %s", len(frame), frame.index[0].date(), frame.index[-1].date()
+    )
+    return frame

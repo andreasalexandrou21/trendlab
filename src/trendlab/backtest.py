@@ -18,7 +18,21 @@ import pandas as pd
 
 from .costs import CostModel
 
-PERIODS_PER_YEAR = 365  # daily bars, 24/7 market
+PERIODS_PER_YEAR = 365  # 24/7 default; overridden per-run by `bars_per_year` below
+DAYS_PER_YEAR = 365.25
+
+
+def bars_per_year(index: pd.DatetimeIndex) -> float:
+    """Infer trading bars per year from the index rather than assuming it.
+
+    Crypto has ~365 bars a year, an exchange-traded market has ~252. Hardcoding 365
+    overstates the annualised Sharpe of an equity strategy by sqrt(365/252) = 1.20, which
+    is the difference between a Sharpe of 0.5 and 0.6 for no reason other than a constant.
+    """
+    if len(index) < 2:
+        return PERIODS_PER_YEAR
+    years = (index[-1] - index[0]).total_seconds() / (DAYS_PER_YEAR * 86400)
+    return len(index) / years if years > 0 else PERIODS_PER_YEAR
 
 
 @dataclass
@@ -31,6 +45,10 @@ class BacktestResult:
     initial_capital: float
     ruined: bool = False
     meta: dict = field(default_factory=dict)
+
+    @property
+    def periods_per_year(self) -> float:
+        return float(self.meta.get("bars_per_year", PERIODS_PER_YEAR))
 
     @property
     def returns(self) -> pd.Series:
@@ -55,15 +73,14 @@ class BacktestResult:
 
     def stats(self) -> dict[str, float]:
         r = self.returns
-        years = len(r) / PERIODS_PER_YEAR
+        ppy = self.periods_per_year
+        years = len(r) / ppy
         final = float(self.equity.iloc[-1])
         cagr = (
             (final / self.initial_capital) ** (1 / years) - 1 if years > 0 and final > 0 else -1.0
         )
-        vol = float(r.std(ddof=1) * np.sqrt(PERIODS_PER_YEAR))
-        sharpe = (
-            float(r.mean() / r.std(ddof=1) * np.sqrt(PERIODS_PER_YEAR)) if r.std(ddof=1) else 0.0
-        )
+        vol = float(r.std(ddof=1) * np.sqrt(ppy))
+        sharpe = float(r.mean() / r.std(ddof=1) * np.sqrt(ppy)) if r.std(ddof=1) else 0.0
         return {
             "final_equity": final,
             "cagr": cagr,
@@ -103,6 +120,7 @@ def run(
     execution_lag: int = 1,
     max_gross: float | None = None,
     drawdown_stop: float | None = None,
+    trade_buffer: float = 0.0,
 ) -> BacktestResult:
     """Run a daily backtest.
 
@@ -121,6 +139,11 @@ def run(
             mark". Once tripped the book is flattened and stays flat for the rest of the
             run, because the live rule requires a human to restart it. Simulating an
             automatic resume would measure a strategy nobody is actually running.
+        trade_buffer: no-trade zone as a fraction of the average position size. 0.0 means
+            rebalance to the exact target every bar, which is what a naive implementation
+            does and why it can turn over 20x a year on a 128-day signal. Carver's standard
+            is ~0.10: leave the position alone unless it has drifted further than that from
+            target. Cuts turnover heavily for almost no change in the signal being followed.
 
     Returns:
         BacktestResult with the equity path, the weights actually held, and the two cost
@@ -151,6 +174,13 @@ def run(
         held = held.mul(scale, axis=0)
 
     idx_values = prices.index
+    # Calendar days between bars. A Friday-to-Monday gap on an exchange-traded market is
+    # THREE days of financing, not one. Charging one day per bar silently understates the
+    # carry cost of a levered equity book by ~40%.
+    gap_days = idx_values.to_series().diff().dt.total_seconds().to_numpy() / 86400.0
+    gap_days[0] = 1.0
+    gap_days = np.nan_to_num(gap_days, nan=1.0)
+
     weights_arr = np.array(held.to_numpy(dtype=float), copy=True)
     returns_arr = rets.to_numpy(dtype=float)
     returns_arr = np.nan_to_num(returns_arr, nan=0.0, posinf=0.0, neginf=0.0)
@@ -188,13 +218,24 @@ def run(
             weights_arr[t] = 0.0
         target = weights_arr[t]
 
+        if trade_buffer > 0.0 and not stopped:
+            # Hold anything that has not drifted past the buffer. The comparison is against
+            # the DRIFTED position, not the previous target, so a position that moved with
+            # the market is judged on where it actually is.
+            n_live = int(np.count_nonzero(target))
+            if n_live:
+                tolerance = trade_buffer * float(np.abs(target).sum()) / n_live
+                keep = np.abs(target - drift) < tolerance
+                target = np.where(keep, drift, target)
+                weights_arr[t] = target
+
         # Rebalance from wherever price drift left us to the new target.
         traded_notional = float(np.abs(target - drift).sum()) * prev_equity
         tc = float(costs.trade_cost(traded_notional))
 
         # Financing accrues on borrowed notional for the bar we are about to hold.
         gross_notional = float(np.abs(target).sum()) * prev_equity
-        fc = float(costs.financing_cost(gross_notional, prev_equity, days=1.0))
+        fc = float(costs.financing_cost(gross_notional, prev_equity, days=gap_days[t]))
 
         pnl = float(target @ returns_arr[t]) * prev_equity
         new_equity = prev_equity + pnl - tc - fc
@@ -224,9 +265,11 @@ def run(
         initial_capital=initial_capital,
         ruined=ruined,
         meta={
+            "bars_per_year": bars_per_year(idx),
             "execution_lag": execution_lag,
             "max_gross": max_gross,
             "drawdown_stop": drawdown_stop,
+            "trade_buffer": trade_buffer,
             "stopped": stopped,
             "stop_date": stop_date,
         },

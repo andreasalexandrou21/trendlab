@@ -203,3 +203,97 @@ def test_drawdown_stop_validates_its_range(random_walk):
     for bad in (0.0, 1.0, -0.1, 5.0):
         with pytest.raises(ValueError, match="drawdown_stop"):
             run(random_walk, weights, drawdown_stop=bad)
+
+
+def test_bars_per_year_is_inferred_not_assumed():
+    """~261 for weekdays-only, ~365 for 24/7, and ~252 once real holidays are removed.
+
+    Hardcoding 365 inflates an exchange-traded strategy's annualised Sharpe by
+    sqrt(365/252) = 1.20 for no reason other than a constant.
+    """
+    from trendlab.backtest import bars_per_year
+
+    weekdays = pd.date_range("2015-01-01", periods=2520, freq="B", tz="UTC")
+    daily = pd.date_range("2015-01-01", periods=3650, freq="D", tz="UTC")
+
+    # freq="B" is every weekday with no market holidays, so 261 is the correct answer here.
+    assert bars_per_year(weekdays) == pytest.approx(261, rel=0.02)
+    assert bars_per_year(daily) == pytest.approx(365, rel=0.02)
+
+    # A real exchange calendar drops ~9 holidays a year and lands near 252.
+    holidays = weekdays[~weekdays.isin(weekdays[::29])]
+    assert 248 < bars_per_year(holidays) < 256
+
+
+def test_sharpe_uses_the_inferred_bar_rate():
+    """Same return stream on a business-day calendar must not be annualised as if 24/7."""
+    rng = np.random.default_rng(31)
+    n = 2000
+    rets = rng.normal(0.0004, 0.01, n)
+
+    def equity_from(idx):
+        prices = pd.DataFrame({"A": 100 * np.exp(np.cumsum(rets))}, index=idx)
+        target = pd.DataFrame(1.0, index=idx, columns=["A"])
+        return run(prices, target, costs=FRICTIONLESS)
+
+    b = equity_from(pd.date_range("2015-01-01", periods=n, freq="B", tz="UTC"))
+    d = equity_from(pd.date_range("2015-01-01", periods=n, freq="D", tz="UTC"))
+
+    ratio = d.stats()["sharpe"] / b.stats()["sharpe"]
+    expected = np.sqrt(d.periods_per_year / b.periods_per_year)
+    assert ratio == pytest.approx(expected, rel=0.001)
+    assert ratio > 1.15  # the constant would have been worth this much free Sharpe
+
+
+def test_financing_accrues_over_calendar_days_not_bars():
+    """A Friday-to-Monday gap is three days of interest, not one.
+
+    Charging one day per bar understates the carry on a levered equity book by ~40%,
+    which is exactly the size of the effect that decides whether leverage is viable.
+    """
+    model = CostModel(
+        commission_bps=0.0, slippage_bps=0.0, benchmark_rate=0.02, financing_spread=0.03
+    )
+    # Thu, Fri, Mon, Tue: the third bar carries a 3-day gap.
+    idx = pd.DatetimeIndex(["2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"], tz="UTC")
+    prices = pd.DataFrame({"A": 100.0}, index=idx)
+    target = pd.DataFrame(3.0, index=idx, columns=["A"])
+
+    result = run(prices, target, costs=model, initial_capital=1_000.0)
+
+    weekday = result.financing_costs.iloc[1]
+    weekend = result.financing_costs.iloc[2]
+    assert weekend == pytest.approx(3 * weekday, rel=0.01)
+
+
+def test_trade_buffer_cuts_turnover_without_abandoning_the_signal(random_walk):
+    """A no-trade zone should remove most rebalancing churn while still tracking the signal.
+
+    Without it, a slow signal still turns over enormously because the book chases exact
+    volatility targets every single bar. That turnover is an implementation artefact, not
+    a property of the strategy, and it is pure cost.
+    """
+    rng = np.random.default_rng(77)
+    slow = pd.DataFrame(
+        rng.normal(0, 1, random_walk.shape).cumsum(axis=0) * 0.001 + 0.2,
+        index=random_walk.index,
+        columns=random_walk.columns,
+    )
+
+    naive = run(random_walk, slow, costs=CostModel(), trade_buffer=0.0)
+    buffered = run(random_walk, slow, costs=CostModel(), trade_buffer=0.10)
+
+    assert buffered.stats()["ann_turnover"] < 0.5 * naive.stats()["ann_turnover"]
+    assert buffered.stats()["ann_cost_drag"] < naive.stats()["ann_cost_drag"]
+    # Still following the same signal: positions must stay correlated with the naive book.
+    corr = buffered.weights.stack().corr(naive.weights.stack())
+    assert corr > 0.9
+
+
+def test_trade_buffer_still_honours_a_flat_target(random_walk):
+    """Going to zero is not optional: the buffer must never keep you in a closed position."""
+    target = pd.DataFrame(0.5, index=random_walk.index, columns=random_walk.columns)
+    target.iloc[500:] = 0.0
+
+    result = run(random_walk, target, costs=FRICTIONLESS, trade_buffer=0.25)
+    assert (result.weights.iloc[502:].to_numpy() == 0.0).all()

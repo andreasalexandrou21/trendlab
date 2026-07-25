@@ -37,6 +37,13 @@ class CostModel:
     benchmark_rate: float = 0.02
     financing_spread: float = 0.03
 
+    # Interest earned on cash not deployed. Default 0.0 because that is the TRUTH for a
+    # small account: IBKR pays nothing on balances under USD 10,000 for accounts below
+    # USD 100k NAV. It matters at scale, though, and a trend book running 0.25x gross
+    # leaves ~75% of equity idle, so omitting it silently penalises the strategy by more
+    # than a percent a year on a larger account. Set it to model that case honestly.
+    cash_rate: float = 0.0
+
     # ponytail: square-root market impact is off by default. At EUR 2,000 notional in BTC
     # you are ~1e-6 of daily volume, so impact is a rounding error and modelling it would
     # be theatre. Set impact_coef > 0 (typical 0.5-1.0) if this ever runs size where
@@ -87,7 +94,12 @@ class CostModel:
         reporting levered and unlevered curves side by side.
         """
         borrowed = np.maximum(0.0, np.asarray(gross_notional) - np.asarray(equity))
-        return borrowed * self.financing_rate * days / DAYS_PER_YEAR
+        cost = borrowed * self.financing_rate * days / DAYS_PER_YEAR
+
+        if self.cash_rate:
+            idle = np.maximum(0.0, np.asarray(equity) - np.asarray(gross_notional))
+            cost = cost - idle * self.cash_rate * days / DAYS_PER_YEAR
+        return cost
 
 
 #: Zero-cost model. Only for tests that need to isolate the accounting from the costs.
