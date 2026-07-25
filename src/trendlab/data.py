@@ -26,11 +26,9 @@ DEFAULT_RESEARCH_EXCHANGE = "binance"
 # Majors that are tradeable on an EU-licensed venue post-MiCA. Scoped deliberately:
 # research must never drift onto something that cannot actually be traded.
 #
-# KNOWN BIAS, unfixed as of Batch 1: this list is today's majors, chosen because they
-# survived. Backtesting it from 2017 is survivorship bias and will flatter trend following,
-# because the 2018 major list also contained EOS, TRX, XLM, IOTA and NEO. The fix is a
-# point-in-time universe reconstructed from rolling dollar volume, which is Batch 2 work.
-# Until then, treat every number produced on this universe as an upper bound, not an estimate.
+# SURVIVORSHIP-BIASED. This is today's majors, chosen because they survived, and it is kept
+# only as the deliberately-biased baseline to measure the bias against. For research use
+# CANDIDATES with `point_in_time_universe`.
 UNIVERSE = [
     "BTC/USDT",
     "ETH/USDT",
@@ -42,6 +40,73 @@ UNIVERSE = [
     "ADA/USDT",
     "DOGE/USDT",
     "AVAX/USDT",
+]
+
+# Broad candidate pool for point-in-time selection. Deliberately includes coins that were
+# top-ten once and then collapsed (EOS, TRX, XLM, IOTA, NEO, ZEC, DASH, WAVES, ONT, QTUM,
+# OMG, ZIL) so that ranking by trailing liquidity can pick losers when they were winners.
+# Symbols the exchange no longer serves are skipped at fetch time rather than faked.
+CANDIDATES = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "BNB/USDT",
+    "XRP/USDT",
+    "ADA/USDT",
+    "DOGE/USDT",
+    "SOL/USDT",
+    "DOT/USDT",
+    "LTC/USDT",
+    "BCH/USDT",
+    "LINK/USDT",
+    "XLM/USDT",
+    "TRX/USDT",
+    "EOS/USDT",
+    "XMR/USDT",
+    "ETC/USDT",
+    "ATOM/USDT",
+    "ALGO/USDT",
+    "VET/USDT",
+    "FIL/USDT",
+    "NEAR/USDT",
+    "APT/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+    "AVAX/USDT",
+    "UNI/USDT",
+    "AAVE/USDT",
+    "MKR/USDT",
+    "SAND/USDT",
+    "MANA/USDT",
+    "AXS/USDT",
+    "NEO/USDT",
+    "IOTA/USDT",
+    "ZEC/USDT",
+    "DASH/USDT",
+    "QTUM/USDT",
+    "OMG/USDT",
+    "ZIL/USDT",
+    "ONT/USDT",
+    "WAVES/USDT",
+    "THETA/USDT",
+    "HBAR/USDT",
+    "EGLD/USDT",
+    "XTZ/USDT",
+    "CHZ/USDT",
+    "ENJ/USDT",
+    "CRV/USDT",
+    "COMP/USDT",
+    "SNX/USDT",
+    "GRT/USDT",
+    "BAT/USDT",
+    "ZRX/USDT",
+    "RUNE/USDT",
+    "KAVA/USDT",
+    "IOST/USDT",
+    "ONE/USDT",
+    "MATIC/USDT",
+    "FTM/USDT",
+    "ICP/USDT",
+    "SUI/USDT",
 ]
 
 _TIMEFRAME_MS = {"1d": 86_400_000, "1h": 3_600_000, "4h": 14_400_000}
@@ -161,17 +226,17 @@ def check(frame: pd.DataFrame, symbol: str, timeframe: str = "1d") -> IntegrityR
     )
 
 
-def load(
+def load_frames(
     symbols: list[str] | None = None,
     timeframe: str = "1d",
     since: str = "2017-01-01",
     exchange_id: str = DEFAULT_RESEARCH_EXCHANGE,
     refresh: bool = False,
-) -> pd.DataFrame:
-    """Load close prices for the universe as a single DataFrame (index=UTC date, cols=symbols).
+) -> dict[str, pd.DataFrame]:
+    """Load full OHLCV per symbol, fetching and caching anything not already on disk.
 
-    Caches raw OHLCV per symbol as parquet. Every symbol is integrity-checked on the way
-    through, whether it came from the network or from cache.
+    Every symbol is integrity-checked on the way through, whether it came from the network
+    or from cache. Symbols the exchange does not serve are skipped, not faked.
     """
     symbols = symbols or UNIVERSE
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -194,6 +259,55 @@ def load(
 
     for symbol, frame in frames.items():
         log.info("%s", check(frame, symbol, timeframe))
+    return frames
 
-    closes = pd.DataFrame({s: f["close"] for s, f in frames.items()})
-    return closes.sort_index()
+
+def load(
+    symbols: list[str] | None = None,
+    timeframe: str = "1d",
+    since: str = "2017-01-01",
+    exchange_id: str = DEFAULT_RESEARCH_EXCHANGE,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """Close prices as a single DataFrame (index = UTC date, columns = symbols)."""
+    frames = load_frames(symbols, timeframe, since, exchange_id, refresh)
+    return pd.DataFrame({s: f["close"] for s, f in frames.items()}).sort_index()
+
+
+def dollar_volume(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Quote-currency volume per bar, the liquidity proxy used to rank the universe."""
+    return pd.DataFrame({s: f["close"] * f["volume"] for s, f in frames.items()}).sort_index()
+
+
+def point_in_time_universe(
+    dollar_vol: pd.DataFrame,
+    n: int = 10,
+    lookback: int = 90,
+    min_history: int = 250,
+) -> pd.DataFrame:
+    """Boolean mask: which instruments were top-`n` by liquidity, judged only on the past.
+
+    This is the fix for the biggest bias in Batch 1. Selecting the universe once, today,
+    means selecting instruments *because they survived*, which hands a trend strategy free
+    money it could never have earned in real time.
+
+    Here the rank is recomputed from a trailing `lookback`-day median of dollar volume, so
+    on any given date the selection uses only information that existed on that date. An
+    instrument must also have `min_history` bars before it is eligible, so a newly listed
+    coin cannot be bought on its debut spike.
+
+    Caveat that this does NOT fix: instruments delisted so long ago that the exchange no
+    longer serves their bars are absent from `frames` entirely and cannot be ranked. The
+    candidate list mitigates that by including coins that fell hard but still trade
+    (EOS, TRX, XLM, IOTA, NEO, ZEC, DASH). Residual bias is smaller, not zero.
+    """
+    if n <= 0:
+        raise ValueError("n must be positive")
+
+    liquidity = dollar_vol.rolling(lookback, min_periods=lookback).median()
+    eligible = dollar_vol.notna().cumsum() >= min_history
+    liquidity = liquidity.where(eligible)
+
+    # rank 1 = most liquid; ties broken deterministically by column order
+    ranks = liquidity.rank(axis=1, ascending=False, method="first")
+    return (ranks <= n).fillna(False)

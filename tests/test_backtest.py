@@ -161,3 +161,45 @@ def test_stats_are_self_consistent(random_walk):
     assert stats["ann_vol"] >= 0.0
     assert stats["total_trade_costs"] >= 0.0
     assert stats["ruined"] == 0.0
+
+
+def test_drawdown_stop_flattens_and_stays_flat():
+    """The kill switch halts at the threshold and does not resume on its own.
+
+    The live rule needs a human to restart it, so a backtest that auto-resumes would be
+    measuring a strategy nobody is running.
+    """
+    idx = pd.date_range("2020-01-01", periods=60, freq="D", tz="UTC")
+    prices = pd.DataFrame({"A": 100.0}, index=idx)
+    prices.iloc[20:40] = 60.0  # -40%
+    prices.iloc[40:] = 300.0  # full recovery and then some
+
+    target = pd.DataFrame(1.0, index=idx, columns=["A"])
+    stopped = run(prices, target, costs=FRICTIONLESS, drawdown_stop=0.25)
+    free = run(prices, target, costs=FRICTIONLESS)
+
+    assert stopped.meta["stopped"]
+    assert stopped.meta["stop_date"] is not None
+    assert (stopped.weights.iloc[45:].to_numpy() == 0.0).all()
+    assert stopped.stats()["max_drawdown"] > -0.45
+    # It cost real money here: flat through the rally is the price of the insurance.
+    assert stopped.equity.iloc[-1] < free.equity.iloc[-1]
+
+
+def test_drawdown_stop_does_not_fire_below_threshold():
+    idx = pd.date_range("2020-01-01", periods=40, freq="D", tz="UTC")
+    prices = pd.DataFrame({"A": 100.0}, index=idx)
+    prices.iloc[20:] = 90.0  # -10%, inside a 25% budget
+
+    target = pd.DataFrame(1.0, index=idx, columns=["A"])
+    result = run(prices, target, costs=FRICTIONLESS, drawdown_stop=0.25)
+
+    assert not result.meta["stopped"]
+    assert result.weights.iloc[-1, 0] == pytest.approx(1.0)
+
+
+def test_drawdown_stop_validates_its_range(random_walk):
+    weights = pd.DataFrame(0.0, index=random_walk.index, columns=random_walk.columns)
+    for bad in (0.0, 1.0, -0.1, 5.0):
+        with pytest.raises(ValueError, match="drawdown_stop"):
+            run(random_walk, weights, drawdown_stop=bad)

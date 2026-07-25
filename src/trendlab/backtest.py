@@ -102,6 +102,7 @@ def run(
     initial_capital: float = 1_000.0,
     execution_lag: int = 1,
     max_gross: float | None = None,
+    drawdown_stop: float | None = None,
 ) -> BacktestResult:
     """Run a daily backtest.
 
@@ -116,6 +117,10 @@ def run(
         execution_lag: bars between decision and fill. 1 is the honest default. 0 is
             cheating and exists only so tests can prove the shift matters.
         max_gross: optional cap on sum of absolute weights, applied before execution.
+        drawdown_stop: optional kill switch, e.g. 0.25 for "halt at -25% from high-water
+            mark". Once tripped the book is flattened and stays flat for the rest of the
+            run, because the live rule requires a human to restart it. Simulating an
+            automatic resume would measure a strategy nobody is actually running.
 
     Returns:
         BacktestResult with the equity path, the weights actually held, and the two cost
@@ -129,6 +134,8 @@ def run(
         raise ValueError("prices and target_weights must share columns")
     if execution_lag < 0:
         raise ValueError("execution_lag must be >= 0")
+    if drawdown_stop is not None and not 0 < drawdown_stop < 1:
+        raise ValueError("drawdown_stop must be a fraction in (0, 1)")
 
     rets = prices.pct_change()
 
@@ -143,7 +150,8 @@ def run(
         scale = (max_gross / gross).clip(upper=1.0).replace([np.inf, -np.inf], 1.0).fillna(1.0)
         held = held.mul(scale, axis=0)
 
-    weights_arr = held.to_numpy(dtype=float)
+    idx_values = prices.index
+    weights_arr = np.array(held.to_numpy(dtype=float), copy=True)
     returns_arr = rets.to_numpy(dtype=float)
     returns_arr = np.nan_to_num(returns_arr, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -156,6 +164,9 @@ def run(
 
     drift = np.zeros(n_assets, dtype=float)
     ruined = False
+    stopped = False
+    high_water = initial_capital
+    stop_date = None
 
     for t in range(1, n_bars):
         prev_equity = equity[t - 1]
@@ -163,6 +174,18 @@ def run(
             equity[t] = 0.0
             continue
 
+        high_water = max(high_water, prev_equity)
+        if (
+            drawdown_stop is not None
+            and not stopped
+            and prev_equity <= high_water * (1.0 - drawdown_stop)
+        ):
+            stopped = True
+            stop_date = idx_values[t]
+
+        # Flat once the kill switch trips: the live rule needs a human to restart.
+        if stopped:
+            weights_arr[t] = 0.0
         target = weights_arr[t]
 
         # Rebalance from wherever price drift left us to the new target.
@@ -183,6 +206,7 @@ def run(
         if new_equity <= 0.0:
             equity[t] = 0.0
             ruined = True
+            weights_arr[t:] = 0.0
             drift = np.zeros(n_assets, dtype=float)
             continue
 
@@ -193,13 +217,19 @@ def run(
     idx = prices.index
     return BacktestResult(
         equity=pd.Series(equity, index=idx, name="equity"),
-        weights=held,
+        weights=pd.DataFrame(weights_arr, index=idx, columns=prices.columns),
         trade_costs=pd.Series(trade_cost_arr, index=idx, name="trade_costs"),
         financing_costs=pd.Series(fin_cost_arr, index=idx, name="financing_costs"),
         traded_notional=pd.Series(traded_arr, index=idx, name="traded_notional"),
         initial_capital=initial_capital,
         ruined=ruined,
-        meta={"execution_lag": execution_lag, "max_gross": max_gross},
+        meta={
+            "execution_lag": execution_lag,
+            "max_gross": max_gross,
+            "drawdown_stop": drawdown_stop,
+            "stopped": stopped,
+            "stop_date": stop_date,
+        },
     )
 
 
