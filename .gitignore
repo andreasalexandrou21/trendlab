@@ -9,3 +9,6 @@ data/*.parquet
 
 # Backtest outputs
 reports/
+
+# Tool caches
+.impeccable/
