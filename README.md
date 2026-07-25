@@ -44,7 +44,7 @@ pytest && ruff check .
 from trendlab import CostModel, buy_and_hold, run
 from trendlab.data import load
 
-prices = load(since="2017-01-01")          # cached to data/*.parquet
+prices = load(since="2017-01-01")  # cached to data/*.parquet
 result = run(prices, target_weights, costs=CostModel())
 print(result)
 ```
