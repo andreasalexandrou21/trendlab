@@ -3,8 +3,12 @@
 A systematic trend-following research system for crypto majors. Daily frequency, honest costs,
 and a backtester built before any strategy, so it has no incentive to flatter one.
 
-**Status: Batch 2 of 4. The strategy is built and it loses money.** Details below. That is a
-result, not a gap, and it is reported here in the same place a good result would have gone.
+**Status: Batch 3 of 4, and the project stops here.** The strategy was built, measured, and
+validated properly. It does not work. Batch 4 was live paper execution, and it is cancelled,
+because the correct response to this evidence is not to trade it.
+
+That is the result. It is reported in the same place and the same detail a good result would
+have been, which is the point of building the measuring instrument before the strategy.
 
 ## Why the engine comes first
 
@@ -113,10 +117,98 @@ So the bias is worth about **0.6% a year** here. Smaller than expected, real, an
 predicted direction. Worth knowing that it is a modest effect on this dataset rather than
 assuming it either way.
 
-### What this does not yet establish
+## Verdict: the signal is real gross, gone net, and unfindable in real time
 
-No walk-forward, no deflated Sharpe, no trial count. Batch 3 adds those. The result above is
-a single configuration, and a single configuration is a data point, not a conclusion.
+`python run_batch3.py`. Ten EWMAC rule sets, fixed before looking at any result and written
+out explicitly so the trial count cannot quietly grow. Every evaluation is appended to
+[`trials.jsonl`](trials.jsonl), which is committed: a deflated Sharpe quoted without a
+verifiable trial count is just a Sharpe with extra decimals.
+
+| Rule set | Gross SR | Net SR | Cost/yr |
+|---|---|---|---|
+| ewmac 8/32 | **0.73** | **0.07** | 10.9% |
+| ewmac 8/32+16/64 | 0.62 | 0.03 | 9.3% |
+| ewmac 4-rule | 0.54 | 0.00 | 7.0% |
+| ewmac 16/64 | 0.49 | -0.03 | 7.9% |
+| ewmac 16/64+32/128 | 0.45 | -0.06 | 6.9% |
+| ewmac 16/64+64/256 | 0.43 | -0.06 | 6.2% |
+| ewmac 3-rule (batch 2) | 0.39 | -0.10 | 6.2% |
+| ewmac 32/128 | 0.37 | -0.10 | 6.3% |
+| ewmac 32/128+64/256 | 0.30 | -0.17 | 5.8% |
+| ewmac 64/256 | 0.25 | -0.20 | 5.5% |
+
+The columns tell the story on their own. **Gross Sharpe rises monotonically as the rules get
+faster, and so does the cost, and the cost wins every time.** Faster trend signals genuinely
+carry more information in crypto. None of it survives a 90bp round trip.
+
+### Deflated Sharpe: the best of ten is not a discovery
+
+| | Gross | Net |
+|---|---|---|
+| Best candidate | ewmac 8/32 | ewmac 8/32 |
+| Observed Sharpe (annualised) | 0.73 | 0.07 |
+| Expected max from luck alone (n=10) | 0.23 | 0.13 |
+| PSR vs zero | 0.982 | 0.582 |
+| **DSR vs the search** | **0.926** | **0.430** |
+
+Gross, the result *nearly* clears the 0.95 bar. Read honestly: there is probably a weak real
+trend effect in crypto, which is what the published literature says too, and this sample is
+not strong enough to prove it alone.
+
+Net, the observed Sharpe of 0.07 is **below** the 0.13 that searching ten no-edge variants
+would have produced anyway. A DSR of 0.43 means the result is worse than the search predicts.
+There is nothing here.
+
+### Walk-forward: choosing actively made it worse
+
+Expanding training window, one-year out-of-sample blocks, rule set chosen on training data
+only and never refit on the test window.
+
+| Train end | Test window | Chosen | IS SR | OOS SR |
+|---|---|---|---|---|
+| 2021-04-21 | 2021-04 to 2022-04 | ewmac 4-rule | 0.83 | **-1.07** |
+| 2022-04-21 | 2022-04 to 2023-04 | ewmac 8/32 | 0.38 | -0.18 |
+| 2023-04-21 | 2023-04 to 2024-04 | ewmac 8/32 | 0.26 | +0.61 |
+| 2024-04-20 | 2024-04 to 2025-04 | ewmac 8/32 | 0.31 | **-1.12** |
+| 2025-04-20 | 2025-04 to 2026-04 | ewmac 8/32 | 0.10 | -0.30 |
+
+```
+mean in-sample Sharpe (selected)    0.38
+pooled out-of-sample Sharpe        -0.42
+shrinkage (the cost of choosing)    0.80
+```
+
+Four of five folds negative. The in-sample winner was systematically the wrong pick, and
+selection destroyed 0.80 of Sharpe. This is the number that answers "would I have found this
+in real time", and the answer is no.
+
+### Superior Predictive Ability
+
+```
+SPA vs cash      consistent p = 0.549  -> best candidate does NOT beat it
+SPA vs hold BTC  consistent p = 0.976  -> best candidate does NOT beat it
+```
+
+Hansen's test, 2000 bootstrap replications, accounting for the fact that ten candidates were
+searched. The best of them does not beat holding cash, let alone holding Bitcoin.
+
+### Conclusion
+
+Four independent methods agree, which is the only reason to believe any of them:
+
+1. Net Sharpe is negative for eight of ten rule sets and ~zero for the other two.
+2. Deflated Sharpe of the best net candidate is 0.43, below the coin-flip line.
+3. Walk-forward out-of-sample Sharpe is -0.42 against +0.38 in sample.
+4. SPA cannot distinguish the best candidate from cash.
+
+Root cause is unchanged from Batch 2 and is structural, not fixable by tuning: **effective
+breadth of 1.7 against 30+ needed.** Trend following is paid for diversification. Sixty crypto
+tickers are one factor, so there is nothing to be paid for, and a 6-11% annual cost is charged
+for finding that out.
+
+**Batch 4 is cancelled.** Not writing the live execution layer is the correct outcome. The
+deliverable of this project is the instrument, the method, and a negative result that is
+actually trustworthy, which is worth more than an equity curve that is not.
 
 ## What the engine says about leverage
 
@@ -166,11 +258,10 @@ Stated here rather than discovered later.
 - **Batch 1 (done):** data layer, cost model, engine, mutation-verified test suite.
 - **Batch 2 (done):** EWMAC forecasts, volatility targeting, kill switch, point-in-time
   universe, effective-breadth measurement. Result: negative after costs.
-- **Batch 3:** walk-forward, deflated Sharpe ratio, automatic trial logging, Hansen SPA.
-  The question it answers is whether the gross 0.36 Sharpe is real or noise, since a
-  strategy that only works at zero cost is worth knowing about but not worth trading.
-- **Batch 4:** paper execution, but only if anything survives Batch 3. On current evidence
-  it will not, and stopping is the correct outcome rather than a failure.
+- **Batch 3 (done):** walk-forward, deflated Sharpe, trial logging, Hansen SPA, effective
+  breadth. Verdict: no tradeable edge. See above.
+- **Batch 4: cancelled.** Nothing survived Batch 3, so there is nothing to execute. The
+  instrument is reusable against any market with real breadth; the strategy is not.
 
 Negative results get published here alongside positive ones. A strategy that fails to beat
 buy-and-hold net of doubled costs is a finding, not a gap.
