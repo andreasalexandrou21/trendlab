@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Cached market data. Reproducible via trendlab.data.load, never committed.
+data/*.parquet
+
+# Backtest outputs
+reports/
