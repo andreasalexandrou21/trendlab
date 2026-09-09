@@ -1,9 +1,15 @@
 # trendlab
 
-A systematic trend-following research system for crypto majors. Daily frequency, honest costs,
-and a backtester built before any strategy, so it has no incentive to flatter one.
+A systematic trading research system. Daily frequency, honest costs, and a backtester built
+before any strategy, so it has no incentive to flatter one.
 
-**Status: Batch 4. The trend signal is statistically real. It is still not worth trading.**
+Four strategies have been measured through it: EWMAC trend following on crypto majors, the same
+on a 15-instrument cross-asset universe, Kalman-filtered pairs trading, and grid trading. **Not
+one of them is worth trading, and the point of the repository is that it can tell you so.**
+
+**Status: Batch 6.** The trend signal is statistically real gross, and still not worth trading
+net. The pairs book is what a 1176-test search produces from noise (DSR 0.002). The grid bot
+did not trade at all through a seven-year bull market.
 
 Batch 3 blamed the crypto failure on effective breadth of 1.7. Batch 4 tested that on a
 15-instrument cross-asset universe, breadth doubled to 3.3, and the gross deflated Sharpe went
@@ -330,6 +336,156 @@ Stated here rather than discovered later.
 4. **No validation layer yet.** No walk-forward, no deflated Sharpe, no trial counting. Until
    Batch 3 exists, no number from this repo should be believed, including the ones above.
 
+## Result 3, pairs trading: the screen you use decides the answer
+
+Batch 5 points the same engine at the canonical statistical-arbitrage strategy, and the
+interesting number is not a Sharpe ratio. It is the gap between two ways of choosing pairs from
+the same 49-ticker, 4919-bar universe (2007-01 to 2026-07):
+
+| Screen | Pairs tested | Pairs passing | Expected from noise alone |
+|---|---|---|---|
+| **Economic** (share classes, a metal and its miners, adjacent points on one curve, countries with one export basket) | 27 | **1** | ~1 |
+| **Mined** (every pair, screened for cointegration) | 1176 | **70** | **~58** |
+
+Mining finds seventy cointegrated pairs. Fifty-eight of them are what a 5% test does to noise
+when you run it 1176 times. That is the data-snooping effect measured on the strategy where
+mining is standard practice, rather than asserted in a footnote.
+
+The one economically-motivated pair that survives is XLP/XLY, consumer staples against consumer
+discretionary: p = 0.0012, half-life 113 days, correlation 0.98.
+
+Neither screen produces something worth trading. EUR 1,000 from 2007-01 to 2026-07, same engine,
+same doubled costs:
+
+| Strategy | Final EUR | CAGR | Vol | Sharpe | Max DD | Turn/yr | Cost/yr |
+|---|---|---|---|---|---|---|---|
+| pairs, economic | 452 | -4.0% | 11.6% | **-0.29** | -68.5% | 3.2 | 0.3% |
+| pairs, mined | 1,131 | 0.6% | 6.2% | **0.13** | -26.2% | 2.4 | 0.2% |
+| hold SPY | 7,459 | 10.8% | 19.6% | 0.62 | -55.2% | 0.1 | 0.0% |
+| 60/40 SPY+IEF | 4,651 | 8.2% | 9.8% | **0.85** | -22.1% | 0.1 | 0.0% |
+
+Single-pair Sharpes: economic median -0.30, best -0.30 (there is only one). Mined median -0.09,
+best +0.75, and that best is drawn from a pool where fifty-eight passes were expected from noise,
+which is the entire point of reporting the two screens side by side.
+
+The economic screen returns a single pair, so its deflated Sharpe is not computable: one trial
+has no dispersion to estimate. That is reported as `n/a` rather than worked around, because with
+one trial there was no search and therefore nothing for the deflation to remove.
+
+### What the validation layer says
+
+| | pairs, economic | pairs, mined |
+|---|---|---|
+| Observed Sharpe (ann.) | -0.30 | 0.14 |
+| PSR vs zero | 0.097 | 0.721 |
+| Expected max from luck | n/a (1 trial) | **0.81** |
+| DSR vs the search | n/a | **0.002, FAIL** |
+| SPA vs 60/40 | p = 0.508, does not beat it | p = 0.486, does not beat it |
+
+The mined book looks the more respectable of the two on its own terms: PSR 0.72 says it is
+probably not literally zero. Then the deflation asks the only question that matters, which is
+what the *best of a 1176-test search* would have produced with no edge at all. The answer is an
+expected maximum Sharpe of 0.81 against an observed 0.14, and the DSR collapses to **0.002**.
+The search is worth five times more than the strategy.
+
+Walk-forward is the one place this book behaves better than the crypto batches, and the honest
+reading is that it is not what kills it:
+
+| Train end | Test window | Chosen | IS SR | OOS SR |
+|---|---|---|---|---|
+| 2015-03-31 | 2015-04 to 2018-02 | pairs, mined | 0.05 | -0.15 |
+| 2018-02-22 | 2018-02 to 2021-01 | pairs, mined | 0.02 | 0.83 |
+| 2021-01-15 | 2021-01 to 2023-12 | pairs, mined | 0.12 | 1.69 |
+
+Pooled out-of-sample Sharpe 0.67 against a mean in-sample 0.07, so choosing actively *helped*
+here, the opposite of Batch 3. It does not rescue anything: SPA still cannot separate either
+book from 60/40, and the deflated Sharpe still says the result is what a search this large
+produces from noise.
+
+### The textbook Kalman hedge ratio does not work, and MLE makes it worse
+
+`pairs.py` carries two models on purpose. `kalman_hedge_ratio` is the two-state formulation
+every tutorial implements, following Chan (2013): beta and alpha as a random walk, residual
+treated as white observation noise. It is kept precisely because it fails, and the failure is
+structural rather than a tuning problem. **The residual is not white. It is the mean-reverting
+spread, and that spread is the trade.** With nowhere to put an autocorrelated residual, the
+filter forces it into beta and alpha, which chase each observation and eat the signal.
+
+Measured against a synthetic spread with half-life 13.5 and standard deviation 1.60:
+
+| Parameters | Recovered half-life | Recovered spread std |
+|---|---|---|
+| Chan's published defaults | 0.7 | 0.04 |
+| A deliberately slow filter | 11.2 | 1.43 |
+
+Fitting the two-state model by maximum likelihood makes it worse, not better, and the reason is
+worth stating plainly: **the likelihood objective and the trading objective point in opposite
+directions.** The likelihood rewards one-step-ahead prediction, a filter that chases the
+observation predicts well one step ahead, so MLE actively selects the parameters that destroy
+the spread. `test_two_state_mle_selects_parameters_that_destroy_the_spread` asserts this rather
+than describing it.
+
+`kalman_spread_model` is the fix: a third state carrying the spread with its own AR(1) dynamics.
+The model can then explain an autocorrelated residual without corrupting the hedge ratio, MLE
+becomes the right tool instead of the wrong one, and the filtered spread correlates 0.99 with
+the true one on synthetic data.
+
+Two properties hold in both models, and both are the difference between a backtest and a
+fantasy:
+
+1. **The z-score needs no rolling window.** Standardisation comes from the fitted model's
+   stationary variance, not from a sample mean and standard deviation over a window that may
+   contain the future. That window is where most published pairs backtests leak.
+2. **Filtered, never smoothed.** Forward recursion only. An RTS smoother would give visibly
+   better states and a completely untradeable strategy, because the smoothed estimate at time t
+   conditions on data after t. `test_kalman_is_causal` and `test_spread_model_is_causal` assert
+   that appending future data changes no past estimate.
+
+## Result 4, grid trading: it does nothing in the market it is sold for
+
+Batch 6 measures the most widely sold retail bot strategy instead of dismissing it. Place buys
+on a ladder below the price and sells above it, and bank a little on every oscillation. Twenty
+levels, 1% spacing, 5% of equity per level, so the ladder spans 20% of price and can reach 100%
+of equity.
+
+What it actually is: **short volatility with an unbounded tail.** Each rung crossed is a small
+realised gain; each unit of trend against you is an unrealised loss on inventory that only
+grows. It is the mirror image of a straddle, without the premium a market maker is paid for
+providing the same service. Two structural consequences, both asserted in the tests rather than
+argued: inventory grows monotonically against a trend and no exit rule ever fires
+(`test_grid_never_exits_on_the_way_down`), and a high closed-trade win rate can coexist with a
+deeply negative mark-to-market, because the losses live in the open inventory
+(`test_high_win_rate_coexists_with_losing_money`).
+
+Run across three real regimes rather than a simulator:
+
+| Regime | Grid CAGR | Grid max DD | Hold CAGR | Hold max DD |
+|---|---|---|---|---|
+| Full sample 2007-2026 | 1.3% | -43.1% | **10.8%** | -55.2% |
+| Quiet bull 2013-2019 | **0.0%** | **0.0%** | 14.2% | -19.3% |
+| Crisis 2008-2009 | -1.0% | -42.4% | -9.7% | -55.2% |
+| Rate shock 2022 | 5.2% | -7.0% | 4.3% | -24.5% |
+
+**The second row is the finding.** In the grinding bull market that grid bots are sold for, the
+grid returned exactly 0.0% with exactly 0.0% drawdown: price left the ladder upward and never
+came back through it, so the bot simply never traded. The strategy marketed as the one that
+prints money in calm markets did not participate in a seven-year rally at all.
+
+It does beat holding in the crisis and the rate shock, which is what short volatility looks like
+right up until the tail arrives, and it is the honest half of the result.
+
+Over the full sample:
+
+| Strategy | Final EUR | CAGR | Vol | Sharpe | Max DD | Turn/yr |
+|---|---|---|---|---|---|---|
+| grid SPY | 1,286 | 1.3% | 11.4% | 0.17 | -43.1% | 1.5 |
+| hold SPY | 7,459 | 10.8% | 19.6% | 0.62 | -55.2% | 0.1 |
+| 60/40 SPY+IEF | 4,651 | 8.2% | 9.8% | **0.85** | -22.1% | 0.1 |
+
+And the numbers a vendor would not put on the landing page: a 54.5% win rate on invested bars,
+a -43.1% maximum drawdown, 100% of equity at maximum exposure, a longest unbroken hold of 834
+bars, and stock held on only 20.9% of bars. EUR 1,000 became 1,286 over nineteen years.
+
 ## Roadmap
 
 - **Batch 1 (done):** data layer, cost model, engine, mutation-verified test suite.
@@ -341,6 +497,13 @@ Stated here rather than discovered later.
   no-trade buffer, cash-interest credit. Gross signal confirmed real (DSR 0.977). Net result
   still loses to 60/40. Live execution not built, because there is nothing worth executing.
 
+- **Batch 5 (done):** pairs trading. Kalman hedge ratio, a three-state spread model, economic
+  versus mined screens. Result: DSR 0.002, because the expected best of a 1176-test search
+  (0.81) is five times the Sharpe the search actually found (0.14). The textbook two-state
+  filter is a negative result in its own right.
+- **Batch 6 (done):** grid trading, measured across three real regimes. Result: 1.3% CAGR
+  against 10.8% for holding, and in the quiet bull it is sold for it never traded at all.
+
 Negative results get published here alongside positive ones. A strategy that fails to beat
 buy-and-hold net of doubled costs is a finding, not a gap.
 
@@ -349,7 +512,9 @@ buy-and-hold net of doubled costs is a finding, not a gap.
 Robert Carver, *Systematic Trading* and *Advanced Futures Trading Strategies*, for the
 framework and for honest Sharpe expectations. Bailey and Lopez de Prado on the deflated Sharpe
 ratio and the probability of backtest overfitting, for why most published backtests are noise.
-Harvey, Liu and Zhu (RFS 2016) for why the significance hurdle is t > 3.
+Harvey, Liu and Zhu (RFS 2016) for why the significance hurdle is t > 3. Ernest Chan,
+*Algorithmic Trading* (2013), for the two-state Kalman hedge ratio that Batch 5 implements,
+reproduces, and then argues against.
 
 ## Licence
 

@@ -355,7 +355,8 @@ def load_cross_asset(
 
     tickers = tickers or list(CROSS_ASSET)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path = DATA_DIR / f"cross_asset_{start}.parquet"
+    key = "cross_asset" if tickers == list(CROSS_ASSET) else f"universe{len(tickers)}"
+    path = DATA_DIR / f"{key}_{start}.parquet"
 
     if path.exists() and not refresh:
         frame = pd.read_parquet(path)
@@ -374,3 +375,76 @@ def load_cross_asset(
         "cross-asset: %s bars, %s to %s", len(frame), frame.index[0].date(), frame.index[-1].date()
     )
     return frame
+
+
+# Universe for relative-value / pairs work. Chosen for ECONOMIC relatedness, not by mining
+# correlations: near-duplicate share classes, same-sector competitors, a commodity and its
+# miners, adjacent points on one curve, and countries driven by the same export basket.
+#
+# That ordering is the point. Screening 45 tickers pairwise is 990 tests, and at a 5% level
+# you expect ~50 spuriously "cointegrated" pairs from noise alone. Starting from pairs that
+# have an economic reason to co-move is what stops the multiple-testing correction from
+# eating the entire result.
+PAIRS_UNIVERSE = [
+    # near-identical exposures: these should cointegrate almost by construction, and act as
+    # a positive control. If the pipeline cannot find SPY/IVV, it is broken.
+    "SPY",
+    "IVV",
+    "VOO",
+    "VTI",
+    "QQQ",
+    "QQQM",
+    "IWM",
+    "IWO",
+    # sectors
+    "XLE",
+    "XOP",
+    "XLF",
+    "KRE",
+    "XLK",
+    "VGT",
+    "XLV",
+    "IBB",
+    "XLI",
+    "XLP",
+    "XLY",
+    "XLU",
+    "XLB",
+    # gold and its miners: the canonical cointegrated cluster
+    "GLD",
+    "IAU",
+    "GDX",
+    "GDXJ",
+    "SLV",
+    "SIL",
+    # energy complex
+    "USO",
+    "BNO",
+    "UNG",
+    # duration and credit: adjacent points on one curve
+    "SHY",
+    "IEF",
+    "TLT",
+    "TIP",
+    "LQD",
+    "HYG",
+    "JNK",
+    "AGG",
+    # countries with shared drivers. EWA/EWC is Ernie Chan's textbook example.
+    "EWA",
+    "EWC",
+    "EWU",
+    "EWG",
+    "EWJ",
+    "EWZ",
+    "FXI",
+    "EEM",
+    "VWO",
+    "EFA",
+    "VEA",
+]
+
+
+def load_pairs_universe(start: str = "2007-01-01", refresh: bool = False) -> pd.DataFrame:
+    """Adjusted daily closes for the relative-value universe, cached to parquet."""
+    return load_cross_asset(tickers=sorted(set(PAIRS_UNIVERSE)), start=start, refresh=refresh)

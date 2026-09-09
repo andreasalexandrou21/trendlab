@@ -11,6 +11,9 @@ dependencies = [
     "ccxt>=4.4",
     "arch>=7.2",
     "matplotlib>=3.9",
+    # Lazily imported in data.load_cross_asset, but a fresh clone with no parquet cache
+    # needs it on the first ETF load, so it is a real dependency rather than an extra.
+    "yfinance>=0.2",
 ]
 
 [dependency-groups]
