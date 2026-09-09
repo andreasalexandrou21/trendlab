@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e . pytest ruff
+      # The guards against look-ahead, phantom turnover, unpriced financing and papered-over
+      # ruin are only worth anything if they are still wired in. That is what this runs.
+      - run: pytest
+      - run: ruff check .
